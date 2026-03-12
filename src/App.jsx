@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { HashRouter, Routes, Route, Link } from 'react-router-dom';
 
 // 1. Automatically find all .jsx files in the jsx/ directory
 const demoFiles = import.meta.glob('./jsx/*.jsx', { eager: true });
@@ -15,7 +15,8 @@ const demos = Object.keys(demoFiles).map((path) => {
 
 export default function App() {
   return (
-    <BrowserRouter basename="/dough-demos">
+    // HashRouter doesn't need "basename" because everything after # is local
+    <HashRouter>
       <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
         <header>
           <h1><Link to="/">🍪 dough-demos</Link></h1>
@@ -30,12 +31,19 @@ export default function App() {
         <hr />
 
         <Routes>
-          <Route path="/" element={<p>Select an explainer above to start.</p>} />
+          <Route path="/" element={
+            <div>
+              <p>Select an explainer above to start.</p>
+              <p style={{ fontSize: '0.8em', color: '#666' }}>
+                Currently hosting {demos.length} demos.
+              </p>
+            </div>
+          } />
           {demos.map(({ path, Component }) => (
             <Route key={path} path={path} element={<Component />} />
           ))}
         </Routes>
       </div>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
