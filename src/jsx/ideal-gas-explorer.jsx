@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const CANVAS_SIZE = 480;
-const DT = 0.5;
+const DT = 0.25;
+const SUBSTEPS = 2;
 const FORCE_CUTOFF = 55;
-const PRESSURE_WINDOW = 100;
-const DISPLAY_INTERVAL = 8;
+const PRESSURE_WINDOW = 600;
+const DISPLAY_INTERVAL = 6;
+const THERMOSTAT_INTERVAL = 30;
+const THERMOSTAT_STRENGTH = 0.03;
 
 function speedColor(speed, thermal) {
   const r = Math.min(speed / (thermal * 2.2 + 0.01), 1);
@@ -61,6 +64,19 @@ function rescaleTemp(particles, temp) {
     return;
   }
   const scale = Math.sqrt(2 * temp / mean);
+  for (const p of particles) { p.vx *= scale; p.vy *= scale; }
+}
+
+// Gentle thermostat: nudge velocities toward target temperature without hard reset
+function gentleThermostat(particles, temp) {
+  if (particles.length === 0) return;
+  let sumV2 = 0;
+  for (const p of particles) sumV2 += p.vx * p.vx + p.vy * p.vy;
+  const currentTemp = sumV2 / (2 * particles.length);
+  if (currentTemp < 1e-8) return;
+  // Blend toward target
+  const targetScale = Math.sqrt(temp / currentTemp);
+  const scale = 1 + (targetScale - 1) * THERMOSTAT_STRENGTH;
   for (const p of particles) { p.vx *= scale; p.vy *= scale; }
 }
 
@@ -173,14 +189,14 @@ export default function IdealGasExplorer() {
   const [particleRadius, setParticleRadius] = useState(3);
   const [attraction, setAttraction] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [pressures, setPressures] = useState({ measured: 0, ideal: 0, vdw: 0 });
+  const [pressures, setPressures] = useState({ measured: 0, ideal: 0, vdw: 0, measuredTemp: 0 });
 
   // Initialize
   useEffect(() => {
     simRef.current.particles = initParticles(numParticles, temperature, boxSize, particleRadius);
     simRef.current.pressureAccum = [];
     simRef.current.frame = 0;
-    prevParamsRef.current = { numParticles, temperature, boxSize };
+    prevParamsRef.current = { numParticles, temperature, boxSize, particleRadius, attraction };
   }, []);
 
   // Handle parameter changes
@@ -190,6 +206,7 @@ export default function IdealGasExplorer() {
 
     if (prev.temperature !== undefined && prev.temperature !== temperature) {
       rescaleTemp(sim.particles, temperature);
+      sim.pressureAccum = [];
     }
 
     if (prev.numParticles !== undefined && prev.numParticles !== numParticles) {
@@ -200,6 +217,7 @@ export default function IdealGasExplorer() {
       } else if (diff < 0) {
         sim.particles.splice(numParticles);
       }
+      sim.pressureAccum = [];
     }
 
     if (prev.boxSize !== undefined && prev.boxSize !== boxSize) {
@@ -210,8 +228,15 @@ export default function IdealGasExplorer() {
       sim.pressureAccum = [];
     }
 
-    prevParamsRef.current = { numParticles, temperature, boxSize };
-  }, [temperature, numParticles, boxSize, particleRadius]);
+    if (prev.particleRadius !== undefined && prev.particleRadius !== particleRadius) {
+      sim.pressureAccum = [];
+    }
+    if (prev.attraction !== undefined && prev.attraction !== attraction) {
+      sim.pressureAccum = [];
+    }
+
+    prevParamsRef.current = { numParticles, temperature, boxSize, particleRadius, attraction };
+  }, [temperature, numParticles, boxSize, particleRadius, attraction]);
 
   // Compute theoretical pressures
   const computePressures = useCallback((measured) => {
@@ -221,18 +246,19 @@ export default function IdealGasExplorer() {
 
     const idealP = N * T / A;
 
-    // Van der Waals: P = NkT/(A - Nb) - a(N/A)^2
-    const b = Math.PI * (2 * particleRadius) * (2 * particleRadius) * 0.5; // excluded area per particle
-    const a = Math.abs(attraction) * 400; // scale attraction to VdW parameter
+    // Van der Waals in 2D: P = NkT/(A - Nb) - a(N/A)^2
+    // b = excluded area per particle for hard disks = 2πr² (half of pair excluded area π(2r)²)
+    const r = particleRadius;
+    const b = 2 * Math.PI * r * r;
+    // a from pair potential: force = attraction*0.4/r², potential ~ -attraction*0.4*ln(r)
+    // integrated over attractive shell gives a ≈ π * attraction * 0.4 * (R_cut - 2r)
+    const a = Math.PI * attraction * 0.4 * Math.max(FORCE_CUTOFF - 2 * r, 0);
     const effectiveA = A - N * b;
     let vdwP = 0;
     if (effectiveA > A * 0.05) {
-      vdwP = N * T / effectiveA;
-      if (attraction > 0) { // attraction reduces pressure
-        vdwP -= a * (N / A) * (N / A);
-      }
+      vdwP = N * T / effectiveA - a * (N / A) * (N / A);
     } else {
-      vdwP = N * T / (A * 0.05); // clamp
+      vdwP = N * T / (A * 0.05) - a * (N / A) * (N / A);
     }
     vdwP = Math.max(0, vdwP);
 
@@ -249,17 +275,29 @@ export default function IdealGasExplorer() {
       const sim = simRef.current;
 
       if (!paused) {
-        const impulse = simStep(sim.particles, boxSize, particleRadius, attraction);
-        sim.pressureAccum.push(impulse);
+        let frameImpulse = 0;
+        for (let sub = 0; sub < SUBSTEPS; sub++) {
+          frameImpulse += simStep(sim.particles, boxSize, particleRadius, attraction);
+        }
+        sim.pressureAccum.push(frameImpulse);
         if (sim.pressureAccum.length > PRESSURE_WINDOW) sim.pressureAccum.shift();
         sim.frame++;
+
+        // Gentle thermostat to prevent temperature drift
+        if (sim.frame % THERMOSTAT_INTERVAL === 0) {
+          gentleThermostat(sim.particles, temperature);
+        }
 
         if (sim.frame % DISPLAY_INTERVAL === 0) {
           const totalImpulse = sim.pressureAccum.reduce((a, b) => a + b, 0);
           const perimeter = 4 * boxSize;
-          const time = sim.pressureAccum.length * DT;
+          const time = sim.pressureAccum.length * SUBSTEPS * DT;
           const mP = time > 0 ? totalImpulse / (perimeter * time) : 0;
-          setPressures(computePressures(mP));
+          // Measured temperature: T = <v²>/2 in 2D
+          let sumV2 = 0;
+          for (const p of sim.particles) sumV2 += p.vx * p.vx + p.vy * p.vy;
+          const mT = sim.particles.length > 0 ? sumV2 / (2 * sim.particles.length) : 0;
+          setPressures({ ...computePressures(mP), measuredTemp: mT });
         }
       }
 
@@ -495,6 +533,18 @@ export default function IdealGasExplorer() {
                     {pressures.measured > 0
                       ? `${(((pressures.vdw - pressures.measured) / pressures.measured) * 100).toFixed(1)}%`
                       : "—"}
+                  </span>
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 16, marginTop: 6 }}>
+                <span>
+                  <span style={{ color: "#64748b" }}>T<sub>set</sub>: </span>
+                  <span style={{ color: "#f59e0b" }}>{temperature.toFixed(1)}</span>
+                </span>
+                <span>
+                  <span style={{ color: "#64748b" }}>T<sub>meas</sub>: </span>
+                  <span style={{ color: Math.abs(pressures.measuredTemp - temperature) < temperature * 0.1 ? "#4ade80" : "#f87171" }}>
+                    {pressures.measuredTemp.toFixed(2)}
                   </span>
                 </span>
               </div>
