@@ -310,12 +310,15 @@ function drawHistory(canvas, sim, hover) {
   const last = h[h.length - 1];
   ctx.font = `10px ${MONO}`; ctx.fillStyle = C.text2; ctx.textBaseline = "middle";
   const lx = xOf(last.day / DAYS_PER_YEAR);
-  const ly1 = yOf(last.top), ly2 = yOf(last.bottom);
+  const floorY = m.t + ph - 7; // keep labels clear of the x-axis numbers
+  const ly1 = Math.min(yOf(last.top), floorY), ly2 = Math.min(yOf(last.bottom), floorY);
   const apart = Math.abs(ly1 - ly2) > 12;
   const labelX = lx > m.l + pw - 90 ? lx - 6 : lx + 6;
   ctx.textAlign = lx > m.l + pw - 90 ? "right" : "left";
-  ctx.fillText("richest person", labelX, apart ? ly1 : ly1 - 7);
-  ctx.fillText("bottom half", labelX, apart ? ly2 : ly2 + 7);
+  const mid = Math.min((ly1 + ly2) / 2, floorY - 7);
+  const topFirst = ly1 <= ly2;
+  ctx.fillText("richest person", labelX, apart ? ly1 : mid + (topFirst ? -7 : 7));
+  ctx.fillText("bottom half", labelX, apart ? ly2 : mid + (topFirst ? 7 : -7));
 
   if (sim.firstHalfDay !== null) {
     const fy = sim.firstHalfDay / DAYS_PER_YEAR;
