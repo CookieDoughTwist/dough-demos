@@ -165,11 +165,21 @@ export default function PIDDemo() {
       background: "#0e1117", color: "#c8ccd0", minHeight: "100vh",
       fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", padding: "24px 20px",
       display: "flex", flexDirection: "column", gap: 16
-    }}>
+    }} className="pid-root">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
         input[type=range] { -webkit-appearance: none; appearance: none; background: #1e2430; border-radius: 3px; outline: none; }
         input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: currentColor; cursor: pointer; }
+        @media (pointer: coarse) {
+          input[type=range]::-webkit-slider-thumb { width: 22px; height: 22px; }
+        }
+        .pid-chart-box { height: 420px; }
+        @media (max-width: 640px) {
+          .pid-root { padding: 16px 12px !important; }
+          .pid-controls { flex: 1 1 100% !important; }
+          .pid-chart { order: -1; }
+          .pid-chart-box { height: 260px; }
+        }
       `}</style>
 
       <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
@@ -186,7 +196,7 @@ export default function PIDDemo() {
 
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
         {/* Left panel: controls */}
-        <div style={{ flex: "0 0 260px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="pid-controls" style={{ flex: "0 0 260px", display: "flex", flexDirection: "column", gap: 12 }}>
           {/* Gains */}
           <div style={{ background: "#161b22", borderRadius: 8, padding: 16, border: "1px solid #21262d" }}>
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7280", marginBottom: 12, fontFamily: "'IBM Plex Mono', monospace" }}>
@@ -275,7 +285,7 @@ export default function PIDDemo() {
         </div>
 
         {/* Chart */}
-        <div style={{ flex: 1, minWidth: 0, background: "#161b22", borderRadius: 8, padding: "16px 12px 8px 0", border: "1px solid #21262d" }}>
+        <div className="pid-chart" style={{ flex: "1 1 320px", minWidth: 0, background: "#161b22", borderRadius: 8, padding: "16px 12px 8px 0", border: "1px solid #21262d" }}>
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7280", marginBottom: 8, marginLeft: 16, fontFamily: "'IBM Plex Mono', monospace" }}>
             Response
             <span style={{ marginLeft: 16 }}>
@@ -283,7 +293,8 @@ export default function PIDDemo() {
               <span style={{ marginLeft: 12, color: "#6cb6ff" }}>━</span> process variable
             </span>
           </div>
-          <ResponsiveContainer width="100%" height={420}>
+          <div className="pid-chart-box">
+          <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
               <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
               <XAxis
@@ -306,6 +317,7 @@ export default function PIDDemo() {
               <Line type="monotone" dataKey="y" stroke="#6cb6ff" strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
+          </div>
         </div>
       </div>
 
