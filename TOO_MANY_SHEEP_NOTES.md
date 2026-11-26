@@ -1,6 +1,146 @@
 # Too Many Sheep — notes
 
-## This round (2026-11-17)
+## This round (2026-11-18) — the implementation round
+
+Everything in the round plan below is now in the demo except capsule bodies
+(6.1), which keep their own round. Measured numbers are at the end; where a
+measurement contradicted the plan, the measurement won and the plan's version
+is kept as a tunable set to off.
+
+**Stage.** Sheep spawn off-screen at `x = -35` and walk in, so the backlog is a
+visible queue rather than a number in a closure. Taps are popcorn now:
+`SPAWN_GAP_MS = 0` spawns on the tap, stacking each arrival `2.1r` above the
+last one still standing at the gate, and the column avalanches into the lane.
+The meter is still there above zero. The barn door is occlusion, not a fade:
+the doorway is an open hole, the sheep is clipped to it and darkened by how far
+in it is, and the X braces are gone because a sheep drawn over them read as
+standing in front of a shut door. A sheep arriving too fast overshoots the door
+and trots back, and the door light comes up with the count.
+
+**Voice.** `toWords()` says the real number, however big; `COUNT_SANE` and the
+wrong-numbers joke are off; the red wobbling count is gone, leaving a plain
+number with a small kick as it lands. The fence's lean is the alarm instead.
+
+**Sheep.** Per-sheep `power` and `launchX` rolled at spawn, jump impulse
+coupled to actual speed at launch, determination (`s.speed *= 1.09` per failed
+attempt, capped at 1.5x, given back on clearing), a bounded trot-back done with
+`applyForce`, right-of-way braking from a one-line look-ahead, and the lame
+sheep — which is **not** a separate creature with its own dice roll. It is the
+low tail of the power distribution: roll under the measured cliff and you limp,
+bumble, and have to work up to it. One mechanism, so bumbler frequency is
+`POWER_SIGMA` and nothing else.
+
+**Launching off each other.** The `canLaunch` height gate is gone. One
+predicate, `sense()`, returns footing (real engine contacts, so the rail
+counts), clear air in the launch arc, crowding, the support body and the sheep
+ahead; `penned()` is derived from it. Top of a heap: footing and air, so it
+launches. Buried: footing but no air, so it stays. A pile-up therefore sheds
+sheep over the fence out of its own top while its bottom compacts into a jam —
+measured at 9-10 of 15 before the farmer arrives. The launch pays a reaction
+kick into whatever it pushed off.
+
+**Fence strain** is wound by what the sheep actually do to it: impulses for
+sharp hits, plus a per-step term for sheep leaning on it, because
+`collisionStart` fires once and never sees a heap leaning. It unwinds at 1.5% a
+step, so backing away really does relieve it. A fully wound fence bursts
+without waiting out the farmer's 3.1 s cue (but never before his line).
+`JAM_TOTAL` is retired to 0.
+
+### Where the plan was wrong, and what the measurement said instead
+
+- **`SPEAK_GAP` to 0 does not produce a stutter — it produces silence.** A
+  restart less than ~130 ms after the last one usually never reaches `onstart`:
+  100% silent at 40 ms, 75% at 60, 58% at 80, 50% at 100, 25% at 130, 0% at
+  170. So the floor the plan allowed for is mandatory, and it is implemented as
+  a *trailing* throttle: a crossing inside the floor is not dropped, it leaves
+  the request standing and the *then* current number is spoken the moment the
+  floor expires. Mashing therefore stutters newest-numbers at the floor rate
+  instead of going quiet. `SPEAK_FLOOR` is 220 ms.
+  In real play it is still lossy: at 4 taps/s, 26 crossings produced 26
+  utterances but only 15 reached `onstart`. Correct numbers, in order, about
+  half of them audible. Raising the floor from 170 to 220 barely moved it, so
+  this is Chromium dropping cancelled-and-restarted utterances, not a gap
+  problem. **The recorded-clip fallback is the real answer and this round did
+  not build it.** Not tested on the iPad at all.
+- **A 1-in-7 lame sheep and a 4-5/s clear-rate cannot coexist.** Each lame
+  sheep blocks the lane for seconds; at 1 in 7 arriving every 3.6 s the lane is
+  blocked essentially always. Hence lameness as the low tail rather than a
+  roll, at about 3% of sheep under the cliff.
+- **`JUMP_SPEED_COUPLING` at 0.35 swallowed everything**, exactly as feared:
+  a sheep merely slowed by traffic came up short, 58% of jumps failed and the
+  lane never recovered. At 0.18 the lane has to be genuinely bad, or the sheep
+  already weak, before it costs the fence. Failure rate then 15%.
+- **Two things the plan did not have, and the toy gridlocks without them.**
+  `MIN_LAUNCH_SPEED` (a sheep that has braked to a shuffle baulks rather than
+  attempting a hopeless jump — without it every sheep in a queue fails, so the
+  queue can never serve anybody) and `BAULK_MS` (but it will not baulk for
+  ever: after 1.7 s at the line it has a go anyway, probably muffs it, and
+  feeds the heap — which is a ramp). Together they are the progress guarantee.
+- **Stalled-and-penned was not enough once sheep queue politely.** A line of
+  sheep waiting behind one bad jumper is stalled and technically penned within
+  half a second, and the farmer was arriving after sixteen sheep of calm play.
+  A sheep now counts towards the jam only once its wriggle has already failed
+  (`stuckFor > WRIGGLE_MS`) — it has had a go and is still there.
+- **The following distance *is* the service rate.** Sheep run at one body plus
+  `BRAKE_GAP`, so the fence clears roughly `RUN_SPEED / (2r + gap)` a second.
+  At 54 px that was 2.8/s, below a small child's tap rate; it is 22 px now.
+- **Late launches are what jam the fence.** A sheep that fails right at the
+  post is pinned there — it cannot retreat for the queue behind it and cannot
+  jump for the sheep climbing over it, and that one sheep is what turns a busy
+  lane into a jam. The measured safe band is lopsided (about -95 px early to
+  +32 px late), so `launchX` is lopsided too.
+- **A bug worth remembering:** `JAM_TOTAL = 0` meaning "off" made
+  `S.sheep.length >= JAM_TOTAL` always true, so the farmer arrived instantly on
+  an empty field. Every "0 = off" tunable needs its guard.
+
+### Measured, in Chromium on a desktop (not the iPad)
+
+| what | number |
+| --- | --- |
+| speech restart latency | 21 ms min, 25-90 ms median, 175 ms max |
+| speech silence floor | <130 ms between restarts is mostly silent; 0% silent at 170 ms uniform |
+| spoken number length | ~0.4 s (one word) to ~1.5 s audible; `onend` lags ~0.8 s past the last word |
+| voice under real play | 4 taps/s: 26 crossings, 26 utterances, 15 audible |
+| cancel storm | 300 cancels at 12 ms swallows an utterance or two; recovers within ~1 s, not permanently wedged |
+| jump failure cliff (power) | clears at 0.80, knife-edge at 0.78, fails at 0.72. Scuffs the rail from ~0.87 down |
+| jump failure cliff (launchX) | safe -95..+32 px; +45 lands on the rail, +60 clouts the post; -130 fails early |
+| old `SHORT_JUMP` (power 0.88) | never actually failed solo — it scuffed and got over |
+| fence clear-rate, before this round | ~4.5/s, collapsing to ~1.1-1.6/s between 4.5 and 5/s |
+| fence clear-rate, after | ~3/s clean, marginal at 3.5/s, collapses at 4.5/s |
+| vanilla failure rate | 15% of attempts; 34 of 40 sheep clear first go, max 3 attempts, none failed to clear given space |
+| time to farmer, 2.5 taps/s | no jam in 36 s, count 84, peak strain 0.2 |
+| time to farmer, 4.5 taps/s | 11.5 s, count 18-23 (one run went 18 s without jamming) |
+| time to farmer, palm slam (10/s) | 7.5 s, count 14 |
+| recovery when you stop | 4 s at 4.5/s leaves 15 sheep; no farmer, drains to 2 and the count goes 4 -> 16 |
+| heap shedding (debug Pile-up) | 9-10 of 15 sheep get over before the farmer, at 1.67 s |
+| frame time | 60 fps with 47 sheep and during a Pile-up |
+| tap to sheep visible | 35-54 ms, median 47 |
+
+### Next round
+
+1. **The clear-rate is ~3/s and should be 4-5.** This is the one target this
+   round missed. Calm play (2.5/s) climbs for ever and mashing jams, so the toy
+   is playable, but the band is narrower than intended. The cost is failures
+   blocking the lane, not spacing: each one holds the lane about a second.
+   Either make a failure cheaper to recover from, or make the lane wider at the
+   fence (a second jumping lane is a bigger idea, but worth thinking about).
+2. **Recorded number clips.** The voice is the flow meter and half of it is
+   inaudible at speed. ~30 clips through the existing `AudioContext`, where
+   re-triggering is exact and free. Also: test on the actual iPad, which this
+   round could not do.
+3. **Capsule bodies** (6.1), still their own round, and still the biggest
+   amplifier of the thing the player finds funniest.
+4. `MAX_SHEEP = 70` still counts the off-screen lane. Low stakes, still unfixed.
+5. The jam threshold is now "three sheep whose wriggle has failed". Watch
+   whether that reads as fair when playing, or whether it wants to be four.
+
+### Debug panel
+
+Now closed by default (it sits where a small child's hand lands). `Lame` forces
+a low-power sheep and `Slow lane` fills the run-up, so the two behaviours that
+are otherwise luck can be watched on demand.
+
+## Previous round (2026-11-17)
 
 **The count is no longer capped.** `JAM_COUNT` was 16: hitting sixteen sheep
 summoned the farmer on its own, pile-up or no pile-up. It is now `0`, which

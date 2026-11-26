@@ -25,30 +25,127 @@ const FENCE_X = 470;             // centre of the fence
 const FENCE_TOP = 318;           // y of the top rail
 const JUMP_X = 286;              // sheep leave the ground here — far enough back that
                                  // a rising sheep is above the rail's leading corner
-const SPAWN_X = 90;
-const BARN_DOOR_X = 782;         // sheep vanish into the barn here
+// Sheep walk in from off stage. The leading edge is on screen about 45 ms
+// after the tap, so the toy still feels instant, but the backlog is now a
+// visible line of sheep walking in rather than a number in a closure.
+const SPAWN_X = -35;
+const CULL_X = -600;             // anything shoved this far back is gone
+const DOOR_X0 = 744;             // the barn doorway, as drawBarn() lays it out:
+const DOOR_X1 = 848;             // sheep are clipped to this and swallowed by it
+const DOOR_H = 112;
 
 const RUN_SPEED = 4.6;
 const JUMP_VX = 5.4;             // enough carry to land past the rail, not on it
 const JUMP_VY = -11.0;
-const JUMP_JITTER = 0.04;        // ordinary variation; a solo sheep always clears
-const SHORT_JUMP_CHANCE = 0.12;  // ...but this fraction come up short and catch the rail
+const JUMP_JITTER = 0.04;        // ordinary variation, rolled per jump
+// Retired to 0: a per-jump dice roll made the same sheep good then bad, so no
+// bumbler was ever recognisable, and 0.12 off a power of 1.0 lands at 0.88 —
+// above the measured failure cliff, so it never actually failed on its own.
+// The low tail of POWER_SIGMA does this job now, per sheep instead of per jump.
+const SHORT_JUMP_CHANCE = 0;
 const SHORT_JUMP = 0.12;
+// Per-sheep jump traits, rolled once at spawn, so the bad jumpers are the same
+// individuals every time and the player learns to recognise them. The spread
+// is set against the measured failure cliff — see TOO_MANY_SHEEP_NOTES.md.
+const POWER_SIGMA = 0.22;        // jump-power spread, 1.0 = a textbook jump
+const LAUNCH_X_JITTER = 20;      // px either side of JUMP_X, per sheep. Measured
+                                 // safe band is about -95..+32, so a late roll
+                                 // scuffs the rail and only an unlucky late-and-
+                                 // weak sheep actually clouts the post.
 // Each sheep runs at its own speed, so a crowd bunches the way traffic does:
 // harmless when there are two of them, a pile-up when there are twelve.
 const RUN_VARY = 0.12;
 const REJUMP_MS = 450;           // a sheep that bonks the fence has another go
 
+// How much of the jump comes from how fast the sheep is actually moving when
+// it leaves the ground. 0 = the old fixed-size jump. With it above zero a
+// crowded lane is a slow lane, a slow sheep comes up short, and short sheep
+// block the lane — so a pile-up feeds itself. This coefficient is the knob.
+// Measured: at 0.35 a sheep merely slowed by traffic came up short, 58% of
+// jumps failed and the lane never recovered — the cascade swallowed the calm
+// climb exactly as the notes feared. At 0.18 a sheep has to be genuinely slow,
+// or already weak, before the lane costs it the fence.
+const JUMP_SPEED_COUPLING = 0.18;
+
+// A sheep that fails runs at it harder next time, and gives up the extra once
+// it is over. This is what guarantees it eventually clears on its own: every
+// failed attempt strictly improves the next one, so no sheep's prospects can
+// get worse over time. Distance alone cannot do it — locomotion saturates at
+// the sheep's own top speed after about 65 px of run-up.
+const DETERMINATION_STEP = 1.09; // speed multiplier per failed attempt
+const DETERMINATION_CAP = 1.5;
+// Locomotion saturates at the sheep's own top speed after about 65 px, so a
+// longer run-up buys nothing — and every px of it is lane the queue behind
+// cannot use. Measured: a failed jump blocks the lane for about a second, and
+// at 15% failures that was most of the fence's capacity.
+const RUNUP_WANT = 65;           // px of clear lane a sheep backs up for
+const RETREAT_FORCE = 0.0022;    // force, not velocity: a crowded lane physically
+                                 // prevents the trot-back, and there is never a
+                                 // velocity fight between two opposing sheep
+// The following distance IS the service rate: sheep run nose-to-tail at one
+// body plus this gap, so the fence clears roughly RUN_SPEED / (2r + gap) sheep
+// a second. At 54 px that worked out at 2.8/s, below the 4-5 taps a second a
+// small child produces, and the toy was jammed from the first few taps.
+const BRAKE_GAP = 22;            // look-ahead: start braking within this gap
+const LOOK_AHEAD = 150;          // px in front a sheep pays attention to
+// A sheep that has braked to a shuffle does not attempt the fence: it baulks
+// and waits for the lane. Without this, a queued sheep jumps from a standstill,
+// the speed coupling turns that into a hopeless jump, and every sheep in a
+// queue fails — the queue could never serve anybody. Measured: at this speed
+// the coupled jump lands just above the failure cliff, so a sheep that does
+// commit, clears.
+const MIN_LAUNCH_SPEED = RUN_SPEED * 0.7;
+// ...but it will not baulk for ever. A sheep stood at the jump line this long
+// has a go whatever speed it is doing, which it will probably muff. That is
+// the point: the lane always does something, a muffed jump feeds the heap, and
+// the heap is a ramp. Without it a dense enough queue is a gridlock that never
+// resolves and never even summons the farmer.
+const BAULK_MS = 1700;
+
+// Measured, by sweeping solo sheep at graded power: below this multiplier a
+// sheep cannot clear the rail from a standing start, above it it can. 0.78 is
+// the knife edge where it lands straddling the rail. Everything about jump
+// variance is set against this number rather than guessed.
+const POWER_CLIFF = 0.80;
+// A lame sheep is not a special creature with its own dice roll: it is simply
+// the low tail of the ordinary power distribution. One mechanism, so the
+// frequency of bumblers is POWER_SIGMA and nothing else, and a sheep that
+// rolls under the cliff is the one that limps and has to work up to it.
+const LAME_CHANCE = 0;           // > 0 forces this fraction into the low tail
+const LAME_POWER = [0.70, 0.77];
+const LAME_TRIES_TO_CLEAR = 0;   // 0 = off. Above zero, a lame sheep is simply
+                                 // handed a clearing jump after this many tries,
+                                 // which is the counter version of the same idea.
+const LAUNCH_KICK = 0.5;         // how much of a jump is paid for by whatever it
+                                 // pushed off. Accuracy is not the point.
+
 const SHEEP_R = 23;
 const MAX_SHEEP = 70;            // hard cap so an old iPad survives a palm-slam
 const TAP_BURST_CAP = 5;         // one palm-slam spawns at most this many
 
-const JAM_STUCK = 3;             // wedged sheep needed to summon the farmer
-const JAM_TOTAL = 20;            // ...or this many on screen at once
+const JAM_STUCK = 3;             // sheep both stalled AND boxed in, to summon the farmer
+const JAM_TOTAL = 0;             // 0 = never summon the farmer for a head count. It
+                                 // was 20, which is the same sin JAM_COUNT had: it
+                                 // fires on a number rather than on a jam, and sheep
+                                 // queueing off-screen would trip it with nothing wrong.
 const JAM_COUNT = 0;             // 0 = the count alone NEVER summons the farmer, so a
                                  // calm player counts up forever. Only a real traffic
                                  // jam ends a round. Set this > 0 to cap a round at a
                                  // number again.
+// The fence's own state of health, wound up by the impulses the sheep put
+// into the rail and unwinding at STRAIN_DECAY a step (about 0.4 of it a
+// second). Full strain is a fence about to go.
+// Two ways to wind a fence up, because there are two ways to push one over.
+// A sharp hit — a giant at speed, a sheep clouting the post — is an impulse.
+// A heap leaning on it is a steady push that no collisionStart will ever
+// report, because the contact only begins once. Measured: one sheep leaning
+// settles the fence at about 0.14 strain, five at 0.7, ten take it out.
+const STRAIN_PER_IMPULSE = 0.0035;
+const STRAIN_PER_LEAN = 0.0009;  // per leaning sheep, per step
+const STRAIN_DECAY = 0.985;
+const STRAIN_BURSTS = true;      // a fully wound fence goes without waiting for
+                                 // the farmer's 3.1 s cue, so the sheep are what
+                                 // break it. false = the old timer alone.
 const STUCK_SPEED = 0.7;
 const STUCK_MS = 500;            // time below STUCK_SPEED before a sheep counts as wedged
 
@@ -60,37 +157,72 @@ const STUCK_MS = 500;            // time below STUCK_SPEED before a sheep counts
 const WRIGGLE_MS = 1600;
 const WRIGGLE_EVERY = 380;
 
-const COUNT_SANE = 7;            // counts correctly to here, then falls apart. Low
-                                 // enough that a typical cycle actually reaches the
-                                 // wrong-numbers joke before the farmer turns up.
-const SPEAK_GAP = 170;           // ms minimum between spoken numbers
-const COUNT_SHOUT_EVERY = 10;    // past COUNT_SANE the numbers are nonsense, but every
-                                 // tenth sheep gets its real number shouted, so a long
-                                 // calm climb still reads as going somewhere
+const COUNT_SANE = 0;            // 0 = always say the real number. Above zero the
+                                 // voice starts talking nonsense past this count,
+                                 // which is the old wrong-numbers joke; it is off
+                                 // because a number that causes nothing should not
+                                 // be dressed up as an emergency.
+// The voice is the flow meter. Every crossing cancels the line and starts the
+// current number, so a number completing cleanly means the fence is keeping up
+// and a stutter means it is being over-driven. Measured in Chromium: a restart
+// less than ~130 ms after the last one usually produces no audio at all (100%
+// silent at 40 ms, 50% at 100 ms, 0% at 170 ms), so the restart has a floor —
+// below it the newest number is held and spoken the moment the floor expires,
+// which keeps the stutter audible instead of silent. See the notes file.
+const SPEAK_FLOOR = 220;
+const COUNT_SHOUT_EVERY = 10;    // every tenth number is louder and higher
 
-// Taps are queued rather than spawned at once. Dumping ten sheep on one spot
-// builds a shapeless clump at the spawn point that never even reaches the
-// fence; metering them in sends a stream at the fence, which is what produces
-// mid-air collisions and sheep wedged on the rail. Every tap still counts.
-// The gap shrinks as the queue grows, so the backlog is the measure of how
-// hard he is mashing: a calm tap trickles sheep in and they all get over, a
-// mash floods the lane faster than the fence can take and jams it. A fixed
-// rate cannot do both.
-const SPAWN_GAP_MS = 165;
-const SPAWN_GAP_MIN = 95;
-const SPAWN_QUEUE_MAX = 20;
+// Popcorn spawning: a tap puts a sheep on the lane at once, stacked above the
+// last one if it has not walked off yet, and the stack avalanches into the
+// lane. The backlog is then a physical queue walking in rather than a counter,
+// and the spacing comes from geometry instead of from a rate.
+// SPAWN_GAP_MS > 0 brings the old meter back: taps queue in S.pending and
+// trickle in at that gap, shrinking towards SPAWN_GAP_MIN as the queue grows.
+const SPAWN_GAP_MS = 0;          // 0 = popcorn, every tap lands immediately
+const SPAWN_GAP_MIN = 95;        // only read when the meter is on
+const SPAWN_QUEUE_MAX = 20;      // only read when the meter is on
+const SPAWN_STACK = 5;           // sheep per column before a new one starts behind
 
 const SURPRISE_CHANCE = 0.085;   // giant / tiny / cow
 const IDLE_SLEEP_MS = 45000;     // no tapping for this long -> wind-down
 const SHOW_COUNT = true;         // the one bit of on-screen text; flip to false
 // ---------------------------------------------------------------------------
 
-const NUMS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
-  'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen'];
+// Spoken out in full, however far the count gets: the number is the reward for
+// a long calm run, and "a hundred and thirteen" takes long enough to say that
+// the voice doubles as the flow meter.
+const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+  'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+  'seventeen', 'eighteen', 'nineteen'];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+  'eighty', 'ninety'];
+
+function toWords(n) {
+  if (!Number.isFinite(n) || n < 0) return String(n);
+  if (n < 20) return ONES[n];
+  if (n < 100) {
+    const o = n % 10;
+    return TENS[Math.floor(n / 10)] + (o ? '-' + ONES[o] : '');
+  }
+  if (n < 1000) {
+    const r = n % 100;
+    return ONES[Math.floor(n / 100)] + ' hundred' + (r ? ' and ' + toWords(r) : '');
+  }
+  if (n < 1000000) {
+    const r = n % 1000;
+    return toWords(Math.floor(n / 1000)) + ' thousand' + (r ? ' ' + toWords(r) : '');
+  }
+  return String(n);
+}
+
+// Only read when COUNT_SANE > 0, i.e. when the wrong-numbers joke is switched on.
 const WILD = ['seventeen', 'twenty', 'thirty', 'forty', 'fifty', 'eighty', 'a hundred'];
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+// Two uniforms summed: a cheap bell with hard edges, so a trait can be given a
+// fat tail (the hopeless jumpers) without any sheep rolling an absurd value.
+const gauss = (sigma) => sigma * ((Math.random() + Math.random() + Math.random()) * 2 / 3 - 1) * 1.5;
 
 // --- sound -----------------------------------------------------------------
 // One AudioContext, unlocked by the first touch (iOS). Everything is
@@ -166,7 +298,7 @@ function thunk(vol = 0.2) {
   src.start(t0); src.stop(t0 + 0.14);
 }
 
-function creak() {
+function creak(vol = 0.06) {
   if (!actx) return;
   const t0 = actx.currentTime;
   const osc = actx.createOscillator();
@@ -174,7 +306,7 @@ function creak() {
   osc.type = 'sawtooth';
   osc.frequency.setValueAtTime(rand(70, 95), t0);
   osc.frequency.linearRampToValueAtTime(rand(45, 62), t0 + 0.35);
-  env(g, t0, 0.06, 0.08, 0.3);
+  env(g, t0, clamp(vol, 0.01, 0.3), 0.08, 0.3);
   osc.connect(g); g.connect(actx.destination);
   osc.start(t0); osc.stop(t0 + 0.4);
 }
@@ -219,6 +351,8 @@ const DEBUG_GROUPS = [
   ],
   [
     ['Short jump', (a) => a.spawn({ forceShort: true })],
+    ['Lame', (a) => a.spawn({ lame: true })],
+    ['Slow lane', (a) => a.slowLane()],
     ['Giant cow', (a) => a.spawn({ kind: 'cow', scale: 2.1 })],
     ['+10', (a) => a.wave(10)],
   ],
@@ -238,7 +372,9 @@ export default function TooManySheep() {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const apiRef = useRef(null);
-  const [showDebug, setShowDebug] = useState(true);
+  // Closed by default: the panel lives in the top-right, which is exactly
+  // where a small child's hand lands, and the toy is being played with now.
+  const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -281,7 +417,10 @@ export default function TooManySheep() {
       phaseT: 0,
       fenceUp: true,
       strain: 0,
+      strainAcc: 0,
       lastSpeak: 0,
+      sayPending: false,
+      lastCountAt: -9999,
       lastTap: performance.now(),
       shake: 0,
       sleepA: 0,
@@ -290,6 +429,11 @@ export default function TooManySheep() {
       farmerX: VW + 90,
       spoke: {},
       nextId: 1,
+      // measurement hooks, read by the dev console only (window.__sheep):
+      // noJam holds the farmer back so a rate can be measured over a long
+      // window, crossed is a crossing count that survives a reset.
+      noJam: false,
+      crossed: 0,
     };
 
     // --- spawning ----------------------------------------------------------
@@ -309,8 +453,25 @@ export default function TooManySheep() {
         else { kind = 'cow'; scale = 1.35; }
       }
       const r = SHEEP_R * scale;
-      const sx = forced && forced.x != null ? forced.x : SPAWN_X;
-      const sy = forced && forced.y != null ? forced.y : GROUND_Y - r - rand(0, 8);
+      // Popcorn stacking. Two sheep spawned on the same point get a huge
+      // positional correction out of Matter and separate explosively, which
+      // can fling one across the field, so each new arrival is placed on top
+      // of whatever is still standing at the gate. Circles do not stack, so
+      // the column avalanches into the lane on its own.
+      let sx = SPAWN_X, sy = GROUND_Y - r - rand(0, 8);
+      if (forced && forced.x != null) {
+        sx = forced.x;
+        sy = forced.y != null ? forced.y : GROUND_Y - r - rand(0, 8);
+      } else {
+        let col = 0, inCol = 0;
+        for (let guard = 0; guard < 6; guard++) {
+          sx = SPAWN_X - col * SHEEP_R * 2.1;
+          inCol = S.sheep.filter((o) => Math.abs(o.body.position.x - sx) < SHEEP_R * 1.1).length;
+          if (inCol < SPAWN_STACK) break;
+          col++;
+        }
+        sy = GROUND_Y - r - rand(0, 8) - inCol * (SHEEP_R * 2.1);
+      }
       const body = Bodies.circle(sx, sy, r, {
         friction: 0.62, frictionStatic: 0.9, frictionAir: 0.002,
         // barely bouncy: springy sheep hop off each other, go airborne and
@@ -318,15 +479,34 @@ export default function TooManySheep() {
         restitution: 0.12, density: 0.0014, label: 'sheep',
       });
       Body.setVelocity(body, { x: RUN_SPEED, y: 0 });
+      const forceLame = (forced && forced.lame) || (!forced && LAME_CHANCE > 0 && Math.random() < LAME_CHANCE);
       const s = {
         id: S.nextId++, body, kind, scale,
         counted: false, lastJump: -9999, stuckFor: 0, stuck: false,
         lastWriggle: -9999, forceShort: !!(forced && forced.forceShort),
-        squash: 0, legPhase: rand(0, 6.28), wiggle: 0, alpha: 1,
+        squash: 0, bonk: 0, legPhase: rand(0, 6.28), wiggle: 0, alpha: 1,
         vis: 0, pileTilt: rand(-0.55, 0.55),
         speed: RUN_SPEED * rand(1 - RUN_VARY, 1 + RUN_VARY),
-        leaving: false, born: now,
+        dir: 1, overshot: false, born: now,
+        // jump traits: how hard it can push off, and where it decides to go.
+        // Jumping early lands you on the rail, late puts you into the post,
+        // which is the actual cause of a short jump.
+        power: forced && forced.power != null ? forced.power
+          : forceLame ? rand(LAME_POWER[0], LAME_POWER[1]) : 1 + gauss(POWER_SIGMA),
+        // Deliberately lopsided, because the measured safe band is lopsided:
+        // about -95 px early to +32 px late. Jumping early costs a scuff;
+        // jumping late puts the sheep into the post, where it fails hard
+        // against the fence, cannot retreat for the queue behind it and cannot
+        // jump for the sheep climbing over it. That one sheep is what turns a
+        // busy lane into a jam, so the late tail is kept short.
+        launchX: forced && forced.launchX != null ? forced.launchX
+          : rand(-LAUNCH_X_JITTER * 1.6, LAUNCH_X_JITTER * 0.9),
+        attempts: 0, tries: 0, tryOpen: false, retreatTo: -9999, atLine: now,
+        rejumpMs: REJUMP_MS * rand(0.8, 1.35),
+        contacts: [],
       };
+      s.baseSpeed = s.speed;
+      s.lame = s.power < POWER_CLIFF;   // it limps because it is weak, not the other way round
       body.plugin.sheep = s;
       S.sheep.push(s);
       Composite.add(world, body);
@@ -340,21 +520,31 @@ export default function TooManySheep() {
     }
 
     // --- counting ----------------------------------------------------------
-    // Counts properly to COUNT_SANE, then starts skipping and shouting wrong
-    // numbers. The count breaking down is the best joke in the design, so it
-    // gets to break noisily.
+    // Every crossing asks for the voice, and the voice always says the real
+    // current number. A crossing inside SPEAK_FLOOR does not get dropped: it
+    // leaves the request standing, and trySpeak picks up the *then* current
+    // number as soon as the floor expires. So mashing produces a stutter of
+    // newest-numbers at the floor rate, and never silence.
     function countOne(now) {
       S.count++;
-      const n = S.count;
-      const milestone = n > COUNT_SANE && n % COUNT_SHOUT_EVERY === 0;
-      if (!milestone && now - S.lastSpeak < SPEAK_GAP) return;
+      S.crossed++;
+      S.lastCountAt = now;
+      S.sayPending = true;
+      trySpeak(now);
+    }
+
+    function trySpeak(now) {
+      if (!S.sayPending || now - S.lastSpeak < SPEAK_FLOOR) return;
+      S.sayPending = false;
       S.lastSpeak = now;
-      if (n <= COUNT_SANE) {
-        say(NUMS[n] || String(n), 1.35, 1);
-      } else if (milestone) {
-        say(String(n) + '!', rand(1.5, 1.7), 1.1);
-      } else if (Math.random() < 0.55) {
+      const n = S.count;
+      const shout = COUNT_SHOUT_EVERY > 0 && n % COUNT_SHOUT_EVERY === 0;
+      if (COUNT_SANE > 0 && n > COUNT_SANE && !shout) {
         say(WILD[Math.floor(Math.random() * WILD.length)], rand(1.4, 1.75), rand(1.15, 1.45));
+      } else if (shout) {
+        say(toWords(n) + '!', rand(1.5, 1.7), 1.1);
+      } else {
+        say(toWords(n), 1.35, 1);
       }
     }
 
@@ -365,13 +555,29 @@ export default function TooManySheep() {
         const rv = Math.hypot(a.velocity.x - b.velocity.x, a.velocity.y - b.velocity.y);
         const sa = a.plugin.sheep, sb = b.plugin.sheep;
         const hit = clamp(rv / 11, 0, 1);
-        if (sa) sa.squash = Math.max(sa.squash, hit);
-        if (sb) sb.squash = Math.max(sb.squash, hit);
+        if (sa) { sa.squash = Math.max(sa.squash, hit); sa.bonk = Math.max(sa.bonk, hit); }
+        if (sb) { sb.squash = Math.max(sb.squash, hit); sb.bonk = Math.max(sb.bonk, hit); }
         if (hit > 0.3) {
           thunk(0.06 + hit * 0.16);
           if (hit > 0.62 && Math.random() < 0.6) bleat(rand(1.0, 1.5), 0.1);
+          // a bump raises dust where the feet are
+          const s = sa || sb;
+          if (s && hit > 0.45) {
+            S.puffs.push({ x: s.body.position.x + rand(-8, 8), y: GROUND_Y - 3, r: 5, a: 0.4 });
+          }
         }
-        if ((a.label === 'fence' || b.label === 'fence') && hit > 0.25) creak();
+        // The fence's strain is what the sheep actually do to it: every
+        // impulse into the rail winds it up, and it unwinds on its own. So a
+        // pile backing away from the fence really does relieve it, and a
+        // giant at speed really does wind it up faster than ten lambs leaning.
+        if (a.label === 'fence' || b.label === 'fence') {
+          const sheepBody = sa ? a : sb ? b : null;
+          if (sheepBody) {
+            const impulse = sheepBody.mass * rv;
+            S.strainAcc = clamp(S.strainAcc + impulse * STRAIN_PER_IMPULSE, 0, 1.6);
+            if (hit > 0.25) creak(0.04 + S.strain * 0.14);
+          }
+        }
       }
     });
 
@@ -408,6 +614,7 @@ export default function TooManySheep() {
       S.phase = 'play'; S.phaseT = now;
       S.farmerX = VW + 90;
       S.strain = 0;
+      S.strainAcc = 0;
     }
 
     // --- input -------------------------------------------------------------
@@ -421,7 +628,9 @@ export default function TooManySheep() {
       // The tap location is deliberately irrelevant: sheep always enter from
       // the left, or a tap to the right of the fence would spawn one that has
       // already cleared it and the joke dies.
-      if (S.phase === 'play') S.pending = Math.min(S.pending + 1, SPAWN_QUEUE_MAX);
+      if (S.phase !== 'play') return;
+      if (SPAWN_GAP_MS > 0) S.pending = Math.min(S.pending + 1, SPAWN_QUEUE_MAX);
+      else spawnSheep(now);
     }
 
     function onPointer(e) {
@@ -470,40 +679,94 @@ export default function TooManySheep() {
     function step(now) {
       const grounded = (s) => s.body.position.y >= GROUND_Y - SHEEP_R * s.scale - 9;
 
-      // Everything pressed up against this sheep, and how much of it is on top.
-      // This is the whole difference between "wedged on the rail with an empty
-      // field behind me" and "third from the bottom of the heap": the first can
-      // scramble out, the second is held by its neighbours. Checking only what
-      // is directly above is not enough — a sheep at the front of a heap has
-      // clear air over its head and would hop away, unpacking the pile-up.
-      function penned(s) {
+      // One predicate, four facts, so nothing can disagree with anything else:
+      //
+      //   footing  something solid under it — ground, rail, or another sheep.
+      //            Real contacts from the engine, so the rail counts.
+      //   air      nothing above or above-in-front, i.e. the launch arc is open.
+      //   near/above  the crowding either side of it.
+      //
+      // footing && air is what lets a sheep jump, and it replaces the old
+      // height gate. The top of a heap has footing and air, so it launches —
+      // a pile-up sheds sheep over the fence out of its own top, which is the
+      // funniest possible way for a jam to start solving itself. A buried
+      // sheep has footing but no air, so it stays buried and still counts
+      // towards the jam. The two happen at once in the same heap.
+      //
+      // penned() is derived from the same numbers: checking only what is
+      // directly above is not enough, because a sheep at the front of a heap
+      // has clear sky over its head and would hop away, unpacking the pile.
+      function sense(s) {
         const b = s.body, r = SHEEP_R * s.scale;
-        let near = 0, above = 0;
+        let near = 0, above = 0, air = true, footing = false;
+        let support = null, ahead = null, aheadGap = LOOK_AHEAD;
+        for (const c of s.contacts) {
+          if (c.position.y - b.position.y > r * 0.3) {
+            footing = true;
+            if (c.plugin.sheep && (!support || c.position.y < support.position.y)) support = c;
+          }
+        }
         for (const o of S.sheep) {
           if (o === s) continue;
-          const ob = o.body;
-          const reach = r + SHEEP_R * o.scale;
+          const ob = o.body, orr = SHEEP_R * o.scale;
+          const reach = r + orr;
           const dx = ob.position.x - b.position.x, dy = ob.position.y - b.position.y;
+          // Only sheep on this side of the fence are in the way. One that has
+          // landed just beyond the rail is not something to queue behind, and
+          // braking for it stalls the whole lane right at the jump line.
+          const sameSide = !S.fenceUp
+            || (b.position.x < FENCE_X) === (ob.position.x < FENCE_X);
+          if (sameSide && Math.abs(dy) < reach * 0.9 && dx * s.dir > 0) {
+            const gap = Math.abs(dx) - reach;
+            if (gap < aheadGap) { aheadGap = gap; ahead = o; }
+          }
           if (dx * dx + dy * dy > (reach * 1.45) * (reach * 1.45)) continue;
           near++;
           if (dy < -r * 0.45) above++;
+          // the launch arc: up, and up-and-forward. A sheep standing on the
+          // ground in front is something to jump over, not something in the way.
+          if (dy < -r * 0.35 && dx * s.dir > -r * 0.6) air = false;
         }
-        return above > 0 || near > 1;
+        return { footing, air, near, above, support, ahead, aheadGap };
+      }
+      const penned = (q) => q.above > 0 || q.near > 1;
+
+      trySpeak(now);
+
+      // Real contacts from the solver, refreshed once a step. Scanning
+      // positions cannot tell a sheep resting on the fence rail from one
+      // hovering a pixel above it, and that difference is the whole of
+      // "can this sheep push off?".
+      for (const s of S.sheep) s.contacts.length = 0;
+      for (const pair of engine.pairs.list) {
+        if (!pair.isActive) continue;
+        const sa = pair.bodyA.plugin.sheep, sb = pair.bodyB.plugin.sheep;
+        if (sa) sa.contacts.push(pair.bodyB);
+        if (sb) sb.contacts.push(pair.bodyA);
       }
 
-      const spawnGap = Math.max(SPAWN_GAP_MIN, SPAWN_GAP_MS - S.pending * 14);
-      if (S.phase === 'play' && S.pending > 0 && now - S.lastSpawn >= spawnGap) {
-        S.pending--;
-        S.lastSpawn = now;
-        spawnSheep(now);
+      if (SPAWN_GAP_MS > 0) {
+        const spawnGap = Math.max(SPAWN_GAP_MIN, SPAWN_GAP_MS - S.pending * 14);
+        if (S.phase === 'play' && S.pending > 0 && now - S.lastSpawn >= spawnGap) {
+          S.pending--;
+          S.lastSpawn = now;
+          spawnSheep(now);
+        }
+      } else if (S.pending > 0 && S.phase === 'play') {
+        // the meter is off, so a queued wave lands all at once
+        const n = S.pending;
+        S.pending = 0;
+        for (let i = 0; i < n; i++) spawnSheep(now);
       }
 
       let stuckCount = 0;
       for (let i = S.sheep.length - 1; i >= 0; i--) {
         const s = S.sheep[i];
         const b = s.body;
+        const r = SHEEP_R * s.scale;
         const spd = Math.hypot(b.velocity.x, b.velocity.y);
         const g = grounded(s);
+        const look = sense(s);
 
         // wedged?
         // Anything stalled anywhere short of the barn is part of the traffic
@@ -512,12 +775,29 @@ export default function TooManySheep() {
         if (nearFence && spd < STUCK_SPEED && S.fenceUp) s.stuckFor += 16.666;
         else s.stuckFor = 0;
         s.stuck = s.stuckFor > STUCK_MS;
-        if (s.stuck) stuckCount++;
+
+        // leaning on the fence: a steady push, for as long as it keeps pushing
+        if (S.fenceUp && b.position.x < FENCE_X && b.velocity.x > -0.2) {
+          for (const c of s.contacts) {
+            if (c.label === 'fence') { S.strainAcc += b.mass * STRAIN_PER_LEAN; break; }
+          }
+        }
+        // A jam is sheep that *cannot* get out, not sheep that happen to be
+        // slow. A lone sheep straddling the rail, or a lame one trotting back
+        // for another run-up, is stalled but free, and is about to sort itself
+        // out — so it is not part of a jam. A mutually penned heap is.
+        //
+        // It also has to have *tried*: sheep queue politely now, so a line of
+        // them waiting behind one bad jumper is stalled and technically penned
+        // within half a second, and counting that brought the farmer out after
+        // sixteen sheep of perfectly calm play. Waiting for the wriggle to
+        // have failed is the honest test — it has had a go and is still there.
+        if (s.stuckFor > WRIGGLE_MS && penned(look)) stuckCount++;
 
         // stalled long enough to start fighting it
         if (s.stuck && s.stuckFor > WRIGGLE_MS && now - s.lastWriggle > WRIGGLE_EVERY) {
           s.lastWriggle = now;
-          if (!penned(s)) {
+          if (!penned(look)) {
             // nothing holding it in: scramble forwards and over
             Body.setVelocity(b, { x: JUMP_VX * 0.82, y: -7.6 });
             s.lastJump = now;
@@ -534,47 +814,127 @@ export default function TooManySheep() {
 
         // run, jump, run to the barn
         const beforeFence = b.position.x < FENCE_X - 8;
-        // Launching does not require being properly grounded. A sheep nudged
-        // a few pixels into the air by the one behind it would otherwise sail
-        // straight into the fence without jumping, and that one failed sheep
-        // is what the whole pile then backs up behind. Low enough to be in the
-        // run lane is enough; sheep up in the heap stay in the heap.
-        const canLaunch = b.position.y > GROUND_Y - 95;
-        if (!s.leaving) {
-          if (S.fenceUp && beforeFence && canLaunch && b.position.x >= JUMP_X && now - s.lastJump > REJUMP_MS) {
-            const short = s.forceShort || Math.random() < SHORT_JUMP_CHANCE;
-            s.forceShort = false;
-            const j = 1 + (short
-              ? -SHORT_JUMP - rand(0, 0.04)
-              : rand(-JUMP_JITTER, JUMP_JITTER));
-            Body.setVelocity(b, { x: JUMP_VX * j, y: JUMP_VY * j });
-            s.lastJump = now;
-            s.squash = -0.8;
-            boing(rand(0.85, 1.2) / Math.sqrt(s.scale));
-          } else if (g && b.velocity.x < s.speed) {
-            // gentle, re-applied every frame: when the lane is blocked this
-            // becomes shoving pressure, which is what builds the pile.
-            const push = (S.phase === 'flood' || S.phase === 'burst') ? 2.2 : 1;
-            Body.setVelocity(b, {
-              x: b.velocity.x + (s.speed * push - b.velocity.x) * 0.18,
-              y: b.velocity.y,
-            });
+        // how long it has been loitering at the jump line
+        if (!(beforeFence && b.position.x >= JUMP_X + s.launchX && g)) s.atLine = now;
+        // A sheep may jump off whatever it is standing on, as long as its
+        // launch arc is open. That is what makes a heap into a ramp.
+        const canLaunch = look.footing && look.air;
+
+        // Did the last attempt fail? A sheep back on the ground, still short
+        // of the fence, a beat after it jumped, plainly did not make it.
+        if (s.tryOpen && g && beforeFence && now - s.lastJump > 320) {
+          s.tryOpen = false;
+          s.tries++;
+          s.speed = Math.min(s.baseSpeed * DETERMINATION_CAP, s.speed * DETERMINATION_STEP);
+          if (LAME_TRIES_TO_CLEAR > 0 && s.tries >= LAME_TRIES_TO_CLEAR) s.power = 1;
+          // Room to back up and have a proper run at it? The want is bounded
+          // and saturating, and it never reverses past the first thing behind
+          // it, so nothing here can escalate without end.
+          let room = RUNUP_WANT;
+          for (const o of S.sheep) {
+            if (o === s) continue;
+            const dx = b.position.x - o.body.position.x;
+            if (dx > 0 && dx < room + r && Math.abs(o.body.position.y - b.position.y) < r * 1.2) {
+              room = Math.min(room, dx - r - SHEEP_R * o.scale);
+            }
+          }
+          if (room > 30) {
+            s.dir = -1;
+            s.retreatTo = b.position.x - room;
+            s.squash = 0.35;
+            if (Math.random() < 0.5) bleat(rand(0.95, 1.3), 0.09);
           }
         }
+        // ...and it has backed up far enough, or run out of room trying.
+        if (s.dir < 0 && beforeFence && (b.position.x <= s.retreatTo || (g && Math.abs(b.velocity.x) < 0.25 && now - s.lastJump > 900))) {
+          s.dir = 1;
+          S.puffs.push({ x: b.position.x, y: GROUND_Y - 4, r: 6, a: 0.4 });
+        }
 
-        // counted when it crosses the fence line in the air
+        if (S.fenceUp && beforeFence && canLaunch && s.dir > 0
+            && (b.velocity.x > MIN_LAUNCH_SPEED || !g || now - s.atLine > BAULK_MS)
+            && b.position.x >= JUMP_X + s.launchX && now - s.lastJump > s.rejumpMs) {
+          const short = s.forceShort || Math.random() < SHORT_JUMP_CHANCE;
+          s.forceShort = false;
+          s.attempts++;
+          s.tryOpen = true;
+          // what it is actually running at, not what it would like to be
+          const coupling = 1 + JUMP_SPEED_COUPLING * (Math.abs(b.velocity.x) / RUN_SPEED - 1);
+          const j = clamp(s.power * coupling, 0.25, 2) + (short
+            ? -SHORT_JUMP - rand(0, 0.04)
+            : rand(-JUMP_JITTER, JUMP_JITTER));
+          Body.setVelocity(b, { x: JUMP_VX * j, y: JUMP_VY * j });
+          // Vague momentum conservation. setVelocity ignores the reaction, so
+          // the kick has to be explicit: launching off a buried sheep drives
+          // it further down and compacts the heap, launching off one standing
+          // in the open shoves it backwards, which is a bumble for free.
+          if (look.support) {
+            const m = b.mass * LAUNCH_KICK;
+            Body.applyForce(look.support, look.support.position, { x: -JUMP_VX * j * m * 0.0011, y: -JUMP_VY * j * m * 0.0011 });
+          }
+          s.lastJump = now;
+          s.squash = -0.8;
+          boing(rand(0.85, 1.2) / Math.sqrt(s.scale));
+        } else if (s.dir < 0) {
+          // Retreat by force, never by velocity: a crowded lane then
+          // physically prevents the trot-back and there is no velocity fight
+          // to lose, so two opposing sheep can never deadlock.
+          Body.applyForce(b, b.position, { x: -b.mass * RETREAT_FORCE, y: 0 });
+        } else if (g && b.velocity.x < s.speed) {
+          // gentle, re-applied every frame: when the lane is blocked this
+          // becomes shoving pressure, which is what builds the pile.
+          const push = (S.phase === 'flood' || S.phase === 'burst') ? 2.2 : 1;
+          let target = s.speed * push;
+          // Right of way. Sheep do not walk into each other on purpose: brake
+          // for the one in front, and stop altogether for one that is backing
+          // up towards you. The queue is then something the sheep decide to
+          // form, and a pile-up is fifteen small refusals rather than geometry.
+          if (look.ahead && look.aheadGap < BRAKE_GAP && S.phase === 'play') {
+            const a = look.ahead;
+            // Slow for it, never stop dead for it. A full stop behind every
+            // sheep that backs up froze the whole lane for about a second per
+            // failed jump, which at four taps a second is most of the lane's
+            // capacity. The retreat is done with force, so there is no
+            // velocity fight to lose by keeping moving.
+            target = a.dir < 0 ? Math.min(target, 0.8)
+              : Math.min(target, Math.max(0.6, a.body.velocity.x));
+          }
+          Body.setVelocity(b, {
+            x: b.velocity.x + (target - b.velocity.x) * 0.18,
+            y: b.velocity.y,
+          });
+        }
+
+        // Counted when it crosses the fence line in the air. A sheep squeezed
+        // over by the heap without jumping still counts: it got over.
         if (!s.counted && b.position.x > FENCE_X && b.position.y < GROUND_Y - 70) {
           s.counted = true;
+          // it is over: give up the extra effort, and take a bow if it took
+          // some doing. One sheep however many goes it had.
+          if (s.tries >= 2) {
+            bleat(rand(1.45, 1.75), 0.2);
+            for (let p = 0; p < 4; p++) {
+              S.puffs.push({ x: b.position.x + rand(-14, 14), y: b.position.y + rand(-14, 14), r: 4, a: 0.5 });
+            }
+          }
+          s.tries = 0; s.tryOpen = false; s.speed = s.baseSpeed;
           if (S.phase === 'play') countOne(now);
         }
 
-        // into the barn
-        if (!s.leaving && b.position.x > BARN_DOOR_X) s.leaving = true;
-        if (s.leaving) {
-          s.alpha -= 0.055;
-          if (s.alpha <= 0) { despawn(s); continue; }
+        // Into the barn. Nothing fades: the sheep is drawn clipped to the
+        // doorway, so the building is what hides it. A sheep arriving too fast
+        // — a giant, or anything the burst threw — overshoots the door and has
+        // to turn round and trot back, which nobody ever got to see when it
+        // was culled off the right-hand edge instead.
+        if (!s.overshot && b.position.x - r > DOOR_X1 && b.position.x < VW + 100) {
+          s.overshot = true;
+          s.dir = -1;
+          S.puffs.push({ x: b.position.x, y: GROUND_Y - 4, r: 7, a: 0.45 });
+          bleat(rand(1.1, 1.45), 0.1);
         }
-        if (b.position.y > VH + 200 || b.position.x > VW + 300) { despawn(s); continue; }
+        if (s.overshot && b.position.x < DOOR_X1 - 26) { s.overshot = false; s.dir = 1; }
+        if (b.position.x > DOOR_X0 + 46 && !s.overshot) { despawn(s); continue; }
+        if (b.position.y > VH + 200 || b.position.x > VW + 300 || b.position.x < CULL_X) { despawn(s); continue; }
 
         // The body is a circle and rolls like a wheel — needed, because a
         // circle that cannot roll can only slide, and friction then eats the
@@ -589,20 +949,32 @@ export default function TooManySheep() {
 
         // draw-time state
         s.squash += (0 - s.squash) * 0.14;
+        s.bonk *= 0.93;
         s.wiggle = s.stuck ? Math.sin(now * 0.028 + s.id) : s.wiggle * 0.9;
         if (g || s.stuck) s.legPhase += s.stuck ? 0.55 : clamp(Math.abs(b.velocity.x) * 0.09, 0.02, 0.5);
         else s.legPhase += 0.06;
+        // dust on touchdown
+        if (g && !s.wasGrounded && b.velocity.y > 2) {
+          for (let p = 0; p < 2; p++) {
+            S.puffs.push({ x: b.position.x + rand(-r * 0.7, r * 0.7), y: GROUND_Y - 3, r: 4, a: 0.42 });
+          }
+        }
+        s.wasGrounded = g;
       }
 
-      const targetStrain = clamp(stuckCount / JAM_STUCK, 0, 1);
-      if (targetStrain > S.strain + 0.24) creak();
-      S.strain += (targetStrain - S.strain) * 0.08;
+      // Strain is now wound up by real collisions (see collisionStart) and
+      // bleeds off on its own. The decay rate IS the patience window: stop
+      // tapping, the sheep stop shoving, and the fence relaxes. The old
+      // version was a count dressed up as a force, which kept climbing while
+      // a pile was actually backing away from the fence.
+      S.strainAcc *= STRAIN_DECAY;
+      S.strain += (clamp(S.strainAcc, 0, 1) - S.strain) * 0.1;
 
       // phase machine
       if (S.phase === 'play') {
-        const jammed = stuckCount >= JAM_STUCK
-          || S.sheep.length >= JAM_TOTAL
-          || (JAM_COUNT > 0 && S.count >= JAM_COUNT);
+        const jammed = !S.noJam && (stuckCount >= JAM_STUCK
+          || (JAM_TOTAL > 0 && S.sheep.length >= JAM_TOTAL)
+          || (JAM_COUNT > 0 && S.count >= JAM_COUNT));
         if (jammed) triggerJam(now);
         else if (now - S.lastTap > IDLE_SLEEP_MS) { S.phase = 'sleep'; S.phaseT = now; }
       } else if (S.phase === 'farmer') {
@@ -612,7 +984,10 @@ export default function TooManySheep() {
           S.spoke.line = true;
           say("Oh my gosh, there's so many!", 0.65, 0.92);
         }
-        if (dt > 3100) doBurst(now);
+        // the fence goes when the sheep have wound it right up, or when the
+        // farmer has been standing there long enough, whichever comes first
+        // ...but never before he has had his say
+        if (dt > 3100 || (STRAIN_BURSTS && S.strain > 0.97 && dt > 2100)) doBurst(now);
       } else if (S.phase === 'burst') {
         S.farmerX += (VW + 120 - S.farmerX) * 0.03;
         if (now - S.phaseT > 450) { S.phase = 'flood'; S.phaseT = now; }
@@ -704,20 +1079,27 @@ export default function TooManySheep() {
       ctx.closePath();
       ctx.fill();
 
-      const dw = 104, dh = 112;
-      const dx = x + w / 2 - dw / 2;
+      // An open doorway, not a gate: the sheep are drawn clipped to this
+      // rectangle, so the dark has to be a hole they walk into. The old X
+      // braces are gone — a sheep drawn over them read as standing in front
+      // of a closed door.
+      const dw = DOOR_X1 - DOOR_X0, dh = DOOR_H;
+      const dx = DOOR_X0;
       ctx.fillStyle = '#2a1714';
       ctx.fillRect(dx, y - dh, dw, dh);
-      if (S.phase === 'flood' || S.phase === 'burst') {
-        ctx.fillStyle = 'rgba(255,214,130,0.22)';
+      // the light in the barn comes up with the count, so the door looks
+      // increasingly worth walking into
+      const warm = clamp(S.count / 40, 0, 1) * 0.16
+        + (S.phase === 'flood' || S.phase === 'burst' ? 0.22 : 0);
+      if (warm > 0.005) {
+        const lg = ctx.createLinearGradient(0, y, 0, y - dh);
+        lg.addColorStop(0, 'rgba(255,214,130,' + warm.toFixed(3) + ')');
+        lg.addColorStop(1, 'rgba(255,214,130,0)');
+        ctx.fillStyle = lg;
         ctx.fillRect(dx, y - dh, dw, dh);
       }
       ctx.strokeStyle = '#f1e6d8';
       ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(dx, y - dh); ctx.lineTo(dx + dw, y);
-      ctx.moveTo(dx + dw, y - dh); ctx.lineTo(dx, y);
-      ctx.stroke();
       ctx.strokeRect(dx, y - dh, dw, dh);
 
       ctx.fillStyle = '#f1e6d8';
@@ -750,14 +1132,18 @@ export default function TooManySheep() {
       ctx.restore();
     }
 
-    function drawLegs(r, phase, stuck, dark) {
+    // The limp is the only badge a lame sheep gets. A bandage would announce
+    // the failure before it happens, which spoils the one good surprise — an
+    // ordinary-looking sheep face-planting into the rail — and it would put a
+    // second meaning on wool colour, which the cow already owns.
+    function drawLegs(r, phase, stuck, dark, limp) {
       ctx.strokeStyle = dark;
       ctx.lineWidth = Math.max(3, r * 0.16);
       ctx.lineCap = 'round';
       const amp = stuck ? 0.9 : 0.38;
       for (let i = 0; i < 4; i++) {
         const lx = (-0.52 + (i % 2) * 0.1 + (i < 2 ? 0 : 0.95)) * r;
-        const sw = Math.sin(phase + i * 1.9) * amp;
+        const sw = Math.sin(phase + i * 1.9) * amp * (limp && i === 1 ? 0.35 : 1);
         ctx.beginPath();
         ctx.moveTo(lx, r * 0.42);
         ctx.lineTo(lx + sw * r * 0.5, r * 1.02 + (stuck ? Math.abs(sw) * r * 0.2 : 0));
@@ -773,12 +1159,23 @@ export default function TooManySheep() {
       const sq = s.squash;
       const cow = s.kind === 'cow';
       ctx.save();
+      // Walking into the barn is occlusion, not a fade: once the sheep is
+      // through the doorway the dark of the barn takes it. The clip only
+      // stops it spilling out of the far side of the opening — it reaches
+      // well back to the left, because a sheep whose rump is still outside is
+      // standing in front of the wall and should be drawn whole.
+      const depth = (b.position.x - DOOR_X0) / 46;
+      if (depth > 0) {
+        ctx.beginPath();
+        ctx.rect(DOOR_X0 - 400, GROUND_Y - DOOR_H, (DOOR_X1 - 4) - (DOOR_X0 - 400), DOOR_H);
+        ctx.clip();
+      }
       ctx.globalAlpha = s.alpha;
       ctx.translate(b.position.x, b.position.y);
       ctx.rotate(s.vis + s.wiggle * 0.22);
       ctx.scale(1 + sq * 0.3, 1 - sq * 0.3);
 
-      drawLegs(r, s.legPhase, s.stuck, cow ? '#4a4038' : '#49454f');
+      drawLegs(r, s.legPhase, s.stuck, cow ? '#4a4038' : '#49454f', s.lame);
 
       ctx.fillStyle = cow ? '#f6f3ee' : '#fbfbf7';
       ctx.strokeStyle = cow ? '#d6d0c6' : '#dedbd2';
@@ -815,18 +1212,27 @@ export default function TooManySheep() {
         ctx.fillStyle = '#35302c';
         ctx.fillRect(hx - r * 0.34, hy - r * 0.46, r * 0.1, r * 0.2);
       }
+      // The face is a reaction, not a decoration: eyes go wide on an impact,
+      // and stay a bit wide while the sheep is stuck. At three years old this
+      // is most of the joke, and it costs one extra number.
+      const wide = clamp(s.bonk * 1.6 + (s.stuck ? 0.35 : 0), 0, 1.4);
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(hx + r * 0.08, hy - r * 0.04, r * 0.095, 0, 6.2832);
+      ctx.arc(hx + r * 0.08, hy - r * 0.04, r * (0.095 + wide * 0.085), 0, 6.2832);
       ctx.fill();
       ctx.fillStyle = '#16141c';
       ctx.beginPath();
-      ctx.arc(hx + r * 0.11, hy - r * 0.04, r * 0.05, 0, 6.2832);
+      ctx.arc(hx + r * 0.11, hy - r * 0.04, r * (0.05 + wide * 0.012), 0, 6.2832);
       ctx.fill();
+      // ears flop back on a bonk and while backing up for another go
+      ctx.save();
+      ctx.translate(hx - r * 0.1, hy - r * 0.3);
+      ctx.rotate(wide * 0.9 + (s.dir < 0 ? 0.6 : 0));
       ctx.fillStyle = cow ? '#f6f3ee' : '#fbfbf7';
       ctx.beginPath();
-      ctx.arc(hx - r * 0.1, hy - r * 0.3, r * 0.19, 0, 6.2832);
+      ctx.ellipse(0, 0, r * 0.19, r * (0.19 - wide * 0.05), 0, 0, 6.2832);
       ctx.fill();
+      ctx.restore();
 
       if (s.stuck) {
         ctx.globalAlpha = s.alpha * (0.4 + 0.3 * Math.sin(now * 0.012 + s.id));
@@ -835,6 +1241,13 @@ export default function TooManySheep() {
         ctx.beginPath();
         ctx.arc(0, 0, r * 1.25, 0, 6.2832);
         ctx.stroke();
+      }
+      if (depth > 0) {
+        // swallowed by the dark of the barn. Drawn in the sheep's own space so
+        // it travels with it; the doorway clip keeps it off the barn wall.
+        ctx.globalAlpha = clamp(depth, 0, 1);
+        ctx.fillStyle = '#2a1714';
+        ctx.fillRect(-r * 4, -r * 4, r * 8, r * 8);
       }
       ctx.restore();
     }
@@ -908,16 +1321,18 @@ export default function TooManySheep() {
       }
       ctx.globalAlpha = 1;
 
+      // Just a count. It no longer summons the farmer, so it no longer gets to
+      // dress itself up as an emergency — the fence's lean is the alarm. The
+      // only flourish is a small kick on the number as it lands.
       if (SHOW_COUNT && S.count > 0) {
-        const tooMany = S.count > COUNT_SANE;
-        ctx.font = (tooMany ? 'bold 92px' : 'bold 76px') + " 'IBM Plex Sans', system-ui, sans-serif";
+        const fresh = clamp(1 - (now - S.lastCountAt) / 260, 0, 1);
+        ctx.font = 'bold ' + Math.round(76 + fresh * 10) + "px 'IBM Plex Sans', system-ui, sans-serif";
         ctx.textAlign = 'left';
         ctx.lineWidth = 8;
         ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-        ctx.fillStyle = tooMany ? '#e0452c' : '#3c4a63';
+        ctx.fillStyle = '#3c4a63';
         ctx.save();
-        ctx.translate(42, 108 + (tooMany ? Math.sin(now * 0.02) * 5 : 0));
-        ctx.rotate(tooMany ? Math.sin(now * 0.015) * 0.05 : 0);
+        ctx.translate(42, 108);
         ctx.strokeText(String(S.count), 0, 0);
         ctx.fillText(String(S.count), 0, 0);
         ctx.restore();
@@ -977,6 +1392,13 @@ export default function TooManySheep() {
           });
         }
       },
+      // A crowded lane is a slow lane, and a slow sheep comes up short. This
+      // fills the run-up so that can be watched without mashing for it.
+      slowLane() {
+        unlockAudio();
+        const now = wake();
+        for (let i = 0; i < 7; i++) spawnSheep(now, { x: 40 + i * 34, y: GROUND_Y - SHEEP_R });
+      },
       farmer() { unlockAudio(); if (S.phase === 'play') triggerJam(wake()); },
       burst() { unlockAudio(); doBurst(wake()); },
       sleep() { const now = performance.now(); S.phase = 'sleep'; S.phaseT = now; S.lastTap = now - IDLE_SLEEP_MS; },
@@ -990,7 +1412,9 @@ export default function TooManySheep() {
       },
     };
 
-    if (import.meta.env && import.meta.env.DEV) window.__sheep = { S, engine };
+    // Dev console hook. `api` is the same list the debug panel drives, so a
+    // measurement run is scriptable; see the report in TOO_MANY_SHEEP_NOTES.md.
+    if (import.meta.env && import.meta.env.DEV) window.__sheep = { S, engine, api: apiRef.current };
 
     return () => {
       cancelAnimationFrame(raf);
