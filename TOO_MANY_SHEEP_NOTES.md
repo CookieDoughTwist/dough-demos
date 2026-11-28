@@ -1,6 +1,36 @@
 # Too Many Sheep — notes
 
-## This round (2026-11-18) — the implementation round
+## This round (2026-11-26) — space bar, and a re-measure of the voice
+
+**Space is a tap.** `keydown` on the window, one sheep per press, same
+`triggerSheep()` call the pointer path uses now that the spawn is split out of
+`tapAt()`. It `preventDefault()`s (or the page scrolls), bails out when a
+button, link or field has focus (a focused button already treats space as a
+click, and the debug panel is all buttons), and **drops auto-repeat**: holding
+the bar down would spawn at the OS repeat rate, which is a tap rate nobody
+chose. A press puffs a little dust at the gate, because the sheep it spawns is
+still off stage for ~45 ms and the press needs to land visibly. Listener is on
+`window`, not the canvas, which is not focusable.
+
+Measured, Chromium in the preview pane: one press, one sheep (8 presses → 8
+sheep); 5 synthetic `repeat: true` events → 0 sheep, 3 more with `repeat:
+false` → 3 sheep; `window.scrollY` stays 0.
+
+**The count voice was already doing both things asked of it**, since the
+2026-11-18 round: `toWords()` says the real current number however big, and
+every crossing cancels the line and starts the new number — with the mandatory
+`SPEAK_FLOOR = 220 ms`, below which a restart produces silence rather than a
+stutter, so a crossing inside the floor holds the request and the *then*
+current number is spoken when the floor expires. Re-measured this round, 8
+crossings: 8 utterances, correct numbers, in order, 6 of 8 reached `onstart`.
+The two that were dropped were requested 251 ms and 233 ms after the previous
+one — i.e. legal under the floor, and still swallowed by Chromium.
+
+So the gap is audibility, not correctness, and the fix is still item 2 below
+(recorded clips through the `AudioContext`, where a re-trigger is exact and
+free). Nothing else from the previous round's list was done this round.
+
+## Previous round (2026-11-18) — the implementation round
 
 Everything in the round plan below is now in the demo except capsule bodies
 (6.1), which keep their own round. Measured numbers are at the end; where a
@@ -140,7 +170,7 @@ Now closed by default (it sits where a small child's hand lands). `Lame` forces
 a low-power sheep and `Slow lane` fills the run-up, so the two behaviours that
 are otherwise luck can be watched on demand.
 
-## Previous round (2026-11-17)
+## Earlier round (2026-11-17)
 
 **The count is no longer capped.** `JAM_COUNT` was 16: hitting sixteen sheep
 summoned the farmer on its own, pile-up or no pile-up. It is now `0`, which

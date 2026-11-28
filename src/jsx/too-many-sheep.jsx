@@ -618,6 +618,16 @@ export default function TooManySheep() {
     }
 
     // --- input -------------------------------------------------------------
+    // One sheep per press, wherever the press came from. The location is
+    // deliberately irrelevant: sheep always enter from the left, or a tap to
+    // the right of the fence would spawn one that has already cleared it and
+    // the joke dies. So a key and a tap are the same call.
+    function triggerSheep(now) {
+      if (S.phase !== 'play') return;
+      if (SPAWN_GAP_MS > 0) S.pending = Math.min(S.pending + 1, SPAWN_QUEUE_MAX);
+      else spawnSheep(now);
+    }
+
     function tapAt(cx, cy, now) {
       const rect = canvas.getBoundingClientRect();
       if (rect.width > 0) {
@@ -625,12 +635,7 @@ export default function TooManySheep() {
         const vy = ((cy - rect.top) / rect.height) * VH;
         S.puffs.push({ x: vx, y: vy, r: 6, a: 0.5 });
       }
-      // The tap location is deliberately irrelevant: sheep always enter from
-      // the left, or a tap to the right of the fence would spawn one that has
-      // already cleared it and the joke dies.
-      if (S.phase !== 'play') return;
-      if (SPAWN_GAP_MS > 0) S.pending = Math.min(S.pending + 1, SPAWN_QUEUE_MAX);
-      else spawnSheep(now);
+      triggerSheep(now);
     }
 
     function onPointer(e) {
@@ -649,6 +654,31 @@ export default function TooManySheep() {
       }
     }
 
+    // Space is a tap, for a desktop keyboard: the canvas is not focusable, so
+    // the listener is on the window and bails out if a control has focus (a
+    // focused button already treats space as a click). Auto-repeat is dropped
+    // on purpose — holding the bar down would spawn at the OS repeat rate,
+    // which is a tap rate nobody chose; one press is one sheep.
+    function onKey(e) {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const t = e.target;
+      if (t && (t.isContentEditable
+        || t.tagName === 'BUTTON' || t.tagName === 'INPUT'
+        || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
+        || t.tagName === 'A')) return;
+      e.preventDefault();                       // or the page scrolls
+      if (e.repeat) return;
+      unlockAudio();
+      const now = performance.now();
+      S.lastTap = now;
+      if (S.phase === 'sleep') { S.phase = 'play'; S.phaseT = now; }
+      // A dab of dust at the gate, so a press that landed is visible even
+      // though the sheep itself is still off stage.
+      S.puffs.push({ x: 24 + rand(-6, 6), y: GROUND_Y - 6, r: 6, a: 0.45 });
+      triggerSheep(now);
+    }
+
+    window.addEventListener('keydown', onKey);
     canvas.addEventListener('touchstart', onPointer, { passive: false });
     canvas.addEventListener('mousedown', onPointer);
     const swallow = (e) => e.preventDefault();
@@ -1420,6 +1450,7 @@ export default function TooManySheep() {
       cancelAnimationFrame(raf);
       ro.disconnect();
       window.removeEventListener('orientationchange', resize);
+      window.removeEventListener('keydown', onKey);
       canvas.removeEventListener('touchstart', onPointer);
       canvas.removeEventListener('mousedown', onPointer);
       canvas.removeEventListener('touchmove', swallow);
